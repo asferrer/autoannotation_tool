@@ -1,0 +1,16 @@
+# Development overrides - hot reload for gateway
+# Automatically picked up by: docker-compose up
+# Production only: docker-compose -f docker-compose.yml up
+
+services:
+  gateway:
+    volumes:
+      - datasets:/app/datasets
+      - jobs_db:/app/db
+      - ./services/gateway/app:/app/app
+      - ./services/shared:/app/shared
+    command: uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+    environment:
+      - SEGMENTATION_SERVICE_URL=${SEGMENTATION_SERVICE_URL:-http://segmentation:8002}
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:3000,http://localhost:5173}
+      - ALLOWED_FS_PATHS=${ALLOWED_FS_PATHS:-/app/datasets}

@@ -1,0 +1,67 @@
+version: "3.8"
+
+services:
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      gateway:
+        condition: service_healthy
+    networks:
+      - annotation-net
+
+  gateway:
+    build: ./services/gateway
+    ports:
+      - "8000:8000"
+    environment:
+      - SEGMENTATION_SERVICE_URL=http://segmentation:8002
+    volumes:
+      - datasets:/app/datasets
+      - jobs_db:/app/db
+    depends_on:
+      segmentation:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - annotation-net
+
+  segmentation:
+    build:
+      context: ./services/segmentation
+    ports:
+      - "8002:8002"
+    environment:
+      - HF_TOKEN=${HF_TOKEN:-}
+    volumes:
+      - checkpoints:/app/checkpoints
+      - datasets:/app/datasets
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8002/health')"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    networks:
+      - annotation-net
+
+networks:
+  annotation-net:
+    driver: bridge
+
+volumes:
+  datasets:
+  jobs_db:
+  checkpoints:
