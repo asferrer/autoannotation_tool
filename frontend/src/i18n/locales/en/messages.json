@@ -1,0 +1,143 @@
+{
+  "app": {
+    "name": "Annotation Tool",
+    "shortName": "AnnTool"
+  },
+  "nav": {
+    "dashboard": "Dashboard",
+    "annotate": "Annotate",
+    "autoLabeling": "Auto Labeling",
+    "annotationReview": "Annotation Review",
+    "manage": "Manage",
+    "labelManager": "Label Manager",
+    "sam3Tools": "SAM3 Tools",
+    "settings": "Settings"
+  },
+  "home": {
+    "welcome": "Annotation Tool",
+    "subtitle": "AI-powered dataset annotation and labeling tool with SAM3 support.",
+    "quickActions": "Quick Actions",
+    "startLabeling": "Start Labeling",
+    "startLabelingDesc": "Auto-label images using SAM3",
+    "reviewAnnotations": "Review Annotations",
+    "reviewAnnotationsDesc": "Review and edit COCO annotations",
+    "manageLabels": "Manage Labels",
+    "manageLabelsDesc": "Rename, merge, or delete categories",
+    "sam3Convert": "SAM3 Convert",
+    "sam3ConvertDesc": "Convert bounding boxes to masks",
+    "systemStatus": "System Status",
+    "status": {
+      "healthy": "Healthy",
+      "degraded": "Degraded",
+      "error": "Unreachable",
+      "loading": "Checking..."
+    }
+  },
+  "settings": {
+    "subtitle": "Configure service connections and preferences.",
+    "connection": "Service Connection",
+    "gatewayUrl": "Gateway URL",
+    "testConnection": "Test Connection",
+    "connected": "Connected",
+    "connectionFailed": "Connection Failed",
+    "language": "Language",
+    "selectLanguage": "Select Language",
+    "display": "Display",
+    "collapseSidebar": "Collapse sidebar by default",
+    "about": "About",
+    "version": "Version",
+    "stack": "Stack"
+  },
+  "annotations": {
+    "loadDataset": "Load Dataset",
+    "cocoJsonPath": "COCO JSON Path",
+    "imagesDirectory": "Images Directory",
+    "noImageSelected": "Select an image to view annotations",
+    "unsavedChanges": "You have unsaved changes",
+    "deleteConfirm": "Are you sure you want to delete this annotation?",
+    "saved": "Saved",
+    "unsaved": "Unsaved",
+    "annotations": "Annotations",
+    "categories": "Categories",
+    "images": "Images",
+    "search": "Search images...",
+    "zoom": "Zoom",
+    "showBboxes": "Show Bboxes",
+    "showLabels": "Show Labels",
+    "filterByCategory": "Filter by category",
+    "allCategories": "All categories"
+  },
+  "labeling": {
+    "newLabeling": "New Labeling",
+    "relabeling": "Relabeling",
+    "templates": "Templates",
+    "classes": "Classes",
+    "outputDirectory": "Output Directory",
+    "taskType": "Task Type",
+    "minConfidence": "Min Confidence",
+    "startJob": "Start Job",
+    "jobProgress": "Job Progress",
+    "previewMode": "Preview Mode",
+    "processing": "Processing...",
+    "completed": "Completed",
+    "failed": "Failed"
+  },
+  "datasets": {
+    "selectDataset": "Select Dataset",
+    "analyze": "Analyze",
+    "totalImages": "Total Images",
+    "totalAnnotations": "Total Annotations",
+    "renameCategory": "Rename Category",
+    "deleteCategory": "Delete Category",
+    "deleteCategoryConfirm": "This will delete the category and all its annotations. Continue?"
+  },
+  "sam3": {
+    "textSegmentation": "Text Segmentation",
+    "convertDataset": "Convert Dataset",
+    "imagePath": "Image Path",
+    "textPrompt": "Text Prompt",
+    "segment": "Segment",
+    "objectsFound": "objects found",
+    "confidence": "Confidence",
+    "minMaskArea": "Min Mask Area",
+    "threshold": "Confidence Threshold"
+  },
+  "common": {
+    "actions": {
+      "save": "Save",
+      "cancel": "Cancel",
+      "delete": "Delete",
+      "refresh": "Refresh",
+      "collapse": "Collapse",
+      "loading": "Loading...",
+      "browse": "Browse",
+      "apply": "Apply",
+      "close": "Close",
+      "confirm": "Confirm",
+      "back": "Back",
+      "next": "Next"
+    },
+    "status": {
+      "success": "Success",
+      "error": "Error",
+      "warning": "Warning",
+      "info": "Info"
+    },
+    "errors": {
+      "generic": "An unexpected error occurred",
+      "network": "Network error. Check your connection.",
+      "notFound": "Resource not found",
+      "forbidden": "Access denied",
+      "serverError": "Server error. Try again later."
+    },
+    "empty": {
+      "noData": "No data available",
+      "noResults": "No results found"
+    }
+  },
+  "notFound": {
+    "title": "Page Not Found",
+    "message": "The page you're looking for doesn't exist.",
+    "goHome": "Go to Dashboard"
+  }
+}

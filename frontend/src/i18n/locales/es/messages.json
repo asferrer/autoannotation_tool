@@ -1,0 +1,143 @@
+{
+  "app": {
+    "name": "Herramienta de Anotacion",
+    "shortName": "AnnTool"
+  },
+  "nav": {
+    "dashboard": "Panel",
+    "annotate": "Anotar",
+    "autoLabeling": "Etiquetado Automatico",
+    "annotationReview": "Revision de Anotaciones",
+    "manage": "Gestionar",
+    "labelManager": "Gestor de Etiquetas",
+    "sam3Tools": "Herramientas SAM3",
+    "settings": "Configuracion"
+  },
+  "home": {
+    "welcome": "Herramienta de Anotacion",
+    "subtitle": "Herramienta de anotacion y etiquetado de datasets con IA y soporte SAM3.",
+    "quickActions": "Acciones Rapidas",
+    "startLabeling": "Iniciar Etiquetado",
+    "startLabelingDesc": "Etiquetar imagenes automaticamente con SAM3",
+    "reviewAnnotations": "Revisar Anotaciones",
+    "reviewAnnotationsDesc": "Revisar y editar anotaciones COCO",
+    "manageLabels": "Gestionar Etiquetas",
+    "manageLabelsDesc": "Renombrar, fusionar o eliminar categorias",
+    "sam3Convert": "Convertir SAM3",
+    "sam3ConvertDesc": "Convertir bounding boxes a mascaras",
+    "systemStatus": "Estado del Sistema",
+    "status": {
+      "healthy": "Operativo",
+      "degraded": "Degradado",
+      "error": "Inaccesible",
+      "loading": "Verificando..."
+    }
+  },
+  "settings": {
+    "subtitle": "Configurar conexiones de servicios y preferencias.",
+    "connection": "Conexion de Servicio",
+    "gatewayUrl": "URL del Gateway",
+    "testConnection": "Probar Conexion",
+    "connected": "Conectado",
+    "connectionFailed": "Conexion Fallida",
+    "language": "Idioma",
+    "selectLanguage": "Seleccionar Idioma",
+    "display": "Visualizacion",
+    "collapseSidebar": "Colapsar barra lateral por defecto",
+    "about": "Acerca de",
+    "version": "Version",
+    "stack": "Stack"
+  },
+  "annotations": {
+    "loadDataset": "Cargar Dataset",
+    "cocoJsonPath": "Ruta JSON COCO",
+    "imagesDirectory": "Directorio de Imagenes",
+    "noImageSelected": "Selecciona una imagen para ver anotaciones",
+    "unsavedChanges": "Tienes cambios sin guardar",
+    "deleteConfirm": "¿Seguro que quieres eliminar esta anotacion?",
+    "saved": "Guardado",
+    "unsaved": "Sin guardar",
+    "annotations": "Anotaciones",
+    "categories": "Categorias",
+    "images": "Imagenes",
+    "search": "Buscar imagenes...",
+    "zoom": "Zoom",
+    "showBboxes": "Mostrar Bboxes",
+    "showLabels": "Mostrar Etiquetas",
+    "filterByCategory": "Filtrar por categoria",
+    "allCategories": "Todas las categorias"
+  },
+  "labeling": {
+    "newLabeling": "Nuevo Etiquetado",
+    "relabeling": "Re-etiquetado",
+    "templates": "Plantillas",
+    "classes": "Clases",
+    "outputDirectory": "Directorio de Salida",
+    "taskType": "Tipo de Tarea",
+    "minConfidence": "Confianza Minima",
+    "startJob": "Iniciar Trabajo",
+    "jobProgress": "Progreso del Trabajo",
+    "previewMode": "Modo Preview",
+    "processing": "Procesando...",
+    "completed": "Completado",
+    "failed": "Fallido"
+  },
+  "datasets": {
+    "selectDataset": "Seleccionar Dataset",
+    "analyze": "Analizar",
+    "totalImages": "Total de Imagenes",
+    "totalAnnotations": "Total de Anotaciones",
+    "renameCategory": "Renombrar Categoria",
+    "deleteCategory": "Eliminar Categoria",
+    "deleteCategoryConfirm": "Esto eliminara la categoria y todas sus anotaciones. ¿Continuar?"
+  },
+  "sam3": {
+    "textSegmentation": "Segmentacion por Texto",
+    "convertDataset": "Convertir Dataset",
+    "imagePath": "Ruta de Imagen",
+    "textPrompt": "Prompt de Texto",
+    "segment": "Segmentar",
+    "objectsFound": "objetos encontrados",
+    "confidence": "Confianza",
+    "minMaskArea": "Area Minima de Mascara",
+    "threshold": "Umbral de Confianza"
+  },
+  "common": {
+    "actions": {
+      "save": "Guardar",
+      "cancel": "Cancelar",
+      "delete": "Eliminar",
+      "refresh": "Actualizar",
+      "collapse": "Colapsar",
+      "loading": "Cargando...",
+      "browse": "Explorar",
+      "apply": "Aplicar",
+      "close": "Cerrar",
+      "confirm": "Confirmar",
+      "back": "Atras",
+      "next": "Siguiente"
+    },
+    "status": {
+      "success": "Exito",
+      "error": "Error",
+      "warning": "Advertencia",
+      "info": "Info"
+    },
+    "errors": {
+      "generic": "Ocurrio un error inesperado",
+      "network": "Error de red. Verifica tu conexion.",
+      "notFound": "Recurso no encontrado",
+      "forbidden": "Acceso denegado",
+      "serverError": "Error del servidor. Intenta de nuevo."
+    },
+    "empty": {
+      "noData": "No hay datos disponibles",
+      "noResults": "No se encontraron resultados"
+    }
+  },
+  "notFound": {
+    "title": "Pagina No Encontrada",
+    "message": "La pagina que buscas no existe.",
+    "goHome": "Ir al Panel"
+  }
+}
