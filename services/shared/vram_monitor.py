@@ -7,6 +7,7 @@ Triggers cleanup when usage exceeds threshold to prevent OOM errors.
 
 import gc
 import logging
+import threading
 from typing import Dict, Optional
 
 try:
@@ -15,13 +16,20 @@ try:
 except ImportError:
     TORCH_AVAILABLE = False
 
+try:
+    import pynvml
+    pynvml.nvmlInit()
+    NVML_AVAILABLE = True
+except Exception:
+    NVML_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
 
 class VRAMMonitor:
     """Monitors VRAM usage and triggers cleanup when needed."""
 
-    def __init__(self, threshold: float = 0.7, device: int = 0, check_interval: int = 2):
+    def __init__(self, threshold: float = 0.6, device: int = 0, check_interval: int = 2):
         """
         Initialize VRAM monitor.
 
@@ -34,6 +42,7 @@ class VRAMMonitor:
         self.device = device
         self.last_check = 0
         self.check_interval = check_interval
+        self._lock = threading.Lock()
 
     def get_vram_usage(self) -> float:
         """
@@ -46,9 +55,9 @@ class VRAMMonitor:
             return 0.0
 
         try:
-            allocated = torch.cuda.memory_allocated(self.device)
+            reserved = torch.cuda.memory_reserved(self.device)
             total = torch.cuda.get_device_properties(self.device).total_memory
-            return allocated / total
+            return reserved / total
         except Exception as e:
             logger.warning(f"Failed to get VRAM usage: {e}")
             return 0.0
@@ -86,8 +95,10 @@ class VRAMMonitor:
         Returns:
             True if VRAM usage exceeds threshold
         """
-        self.last_check += 1
-        if self.last_check % self.check_interval == 0:
+        with self._lock:
+            self.last_check += 1
+            should_check = self.last_check % self.check_interval == 0
+        if should_check:
             usage = self.get_vram_usage()
             if usage > self.threshold:
                 stats = self.get_vram_stats()
@@ -105,8 +116,8 @@ class VRAMMonitor:
         """
         gc.collect()
         if TORCH_AVAILABLE and torch.cuda.is_available():
-            torch.cuda.empty_cache()
             torch.cuda.synchronize()
+            torch.cuda.empty_cache()
             stats = self.get_vram_stats()
             logger.info(
                 f"VRAM cleanup complete: {stats.get('allocated_gb', 0):.2f}GB / "
@@ -124,3 +135,16 @@ class VRAMMonitor:
             self.cleanup()
             return True
         return False
+
+    def get_temperature(self) -> Optional[int]:
+        """
+        Returns GPU temperature in Celsius, or None if unavailable.
+        Uses pynvml for reliable readings without subprocess overhead.
+        """
+        if not NVML_AVAILABLE:
+            return None
+        try:
+            handle = pynvml.nvmlDeviceGetHandleByIndex(self.device)
+            return pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU)
+        except Exception:
+            return None
