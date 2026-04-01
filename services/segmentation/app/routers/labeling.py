@@ -26,7 +26,7 @@ from app.models.extraction_schemas import (
 from app.service_state import (
     state, labeling_jobs, wait_for_sam3,
     thread_pool, labeling_job_semaphore,
-    MAX_CONCURRENT_IMAGES_PER_JOB,
+    MAX_CONCURRENT_LABELING_JOBS, MAX_CONCURRENT_IMAGES_PER_JOB,
     VRAM_MONITOR_AVAILABLE, VRAMMonitor,
     _calculate_iou,
 )
@@ -453,6 +453,7 @@ async def start_relabeling_job(request: StartRelabelingRequest):
             "_coco_data": request.coco_data,
             "_min_confidence": request.min_confidence,
             "_simplify_polygons": request.simplify_polygons,
+            "_simplify_tolerance": getattr(request, "simplify_tolerance", 2.0),
             "_preview_mode": request.preview_mode,  # If True, this is a preview/test run
             "_deduplication_strategy": request.deduplication_strategy,  # Strategy for deduplication: confidence or area
         }
@@ -646,6 +647,36 @@ async def list_labeling_jobs():
 async def get_labeling_job_status(job_id: str):
     """Get status of a labeling job."""
     if job_id not in labeling_jobs:
+        # Fallback: reconstruct status from database for jobs from previous service runs
+        if state.db:
+            try:
+                db_job = state.db.get_job(job_id)
+                if db_job:
+                    total_images = db_job.get("total_items", 0)
+                    processed_images = db_job.get("processed_items", 0)
+                    progress = round((processed_images / total_images * 100), 1) if total_images > 0 else 0.0
+                    result_summary = db_job.get("result_summary", {}) or {}
+                    output_path = db_job.get("output_path", "")
+                    can_resume = False
+                    if db_job.get("status") in ["interrupted", "failed"]:
+                        can_resume = (Path(output_path) / "checkpoint.json").exists()
+                    return LabelingJobStatus(
+                        job_id=job_id,
+                        job_type=db_job.get("job_type", "labeling"),
+                        status=db_job.get("status", "unknown"),
+                        total_images=total_images,
+                        processed_images=processed_images,
+                        progress=progress,
+                        annotations_created=result_summary.get("total_objects_found", 0),
+                        total_objects_found=result_summary.get("total_objects_found", 0),
+                        objects_by_class=result_summary.get("objects_by_class", {}),
+                        output_dir=output_path,
+                        started_at=db_job.get("started_at"),
+                        completed_at=db_job.get("completed_at"),
+                        can_resume=can_resume,
+                    )
+            except Exception as e:
+                logger.warning(f"DB fallback failed for job {job_id}: {e}")
         raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
 
     job = labeling_jobs[job_id]
@@ -758,6 +789,76 @@ async def get_labeling_result(job_id: str):
             success=False,
             error=str(e)
         )
+
+
+@router.get("/labeling/jobs/{job_id}/partial-annotations", tags=["Labeling Tool"])
+async def get_partial_annotations(job_id: str, max_images: int = 0):
+    """Get partial COCO annotations for a running labeling job.
+
+    Returns all processed images by default (max_images=0 means no limit).
+    Pass max_images > 0 to cap the response to the last N images.
+    """
+    if job_id not in labeling_jobs:
+        raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
+
+    job = labeling_jobs[job_id]
+    coco_data = job.get("_coco_result")
+
+    if coco_data is None:
+        # Fallback to checkpoint file
+        output_dir = Path(job.get("output_dir", ""))
+        checkpoint_path = output_dir / "checkpoint.json"
+        if checkpoint_path.exists():
+            try:
+                with open(checkpoint_path, 'r') as f:
+                    checkpoint = json.load(f)
+                coco_data = checkpoint.get("coco_data")
+            except Exception:
+                pass
+
+    if coco_data is None:
+        return {
+            "job_id": job_id,
+            "available": False,
+            "processed_images": job.get("processed_images", 0),
+            "total_images": job.get("total_images", 0),
+        }
+
+    # Build filename -> full path map from job's image paths
+    image_path_map: Dict[str, str] = {}
+    for p in job.get("_image_paths", []):
+        image_path_map[Path(p).name] = p
+
+    # Enrich images with full paths for frontend image serving
+    all_images = []
+    for img in coco_data.get("images", []):
+        enriched = dict(img)
+        enriched["full_path"] = image_path_map.get(img.get("file_name", ""), "")
+        all_images.append(enriched)
+
+    # Return all images by default; max_images > 0 caps to last N
+    enriched_images = all_images[-max_images:] if max_images > 0 and len(all_images) > max_images else all_images
+    recent_image_ids = {img["id"] for img in enriched_images}
+
+    # Strip internal fields and filter to recent images only
+    clean_annotations = []
+    for ann in coco_data.get("annotations", []):
+        if ann.get("image_id") not in recent_image_ids:
+            continue
+        clean_ann = {k: v for k, v in ann.items() if not k.startswith("_")}
+        clean_annotations.append(clean_ann)
+
+    return {
+        "job_id": job_id,
+        "available": True,
+        "data": {
+            "images": enriched_images,
+            "annotations": clean_annotations,
+            "categories": coco_data.get("categories", []),
+        },
+        "processed_images": job.get("processed_images", 0),
+        "total_images": job.get("total_images", 0),
+    }
 
 
 @router.get("/labeling/jobs/{job_id}/previews", tags=["Labeling Tool"])
@@ -1127,33 +1228,34 @@ def _draw_annotations_on_image(
     for cat_id in category_map.keys():
         colors[cat_id] = tuple(int(c) for c in np.random.randint(50, 255, 3))
 
+    # Draw all masks with a single overlay operation (O(1) copies instead of O(N))
+    if draw_masks:
+        overlay = vis_image.copy()
+        for ann in annotations:
+            cat_id = ann.get("category_id", 1)
+            color = colors.get(cat_id, (0, 255, 0))
+            for seg in ann.get("segmentation", []):
+                if isinstance(seg, list) and len(seg) >= 6:
+                    pts = np.array(seg).reshape(-1, 2).astype(np.int32)
+                    cv2.fillPoly(overlay, [pts], color)
+        cv2.addWeighted(overlay, 0.3, vis_image, 0.7, 0, vis_image)
+        del overlay
+
+    # Draw bounding boxes and labels
     for ann in annotations:
         cat_id = ann.get("category_id", 1)
         cat_name = category_map.get(cat_id, f"class_{cat_id}")
         color = colors.get(cat_id, (0, 255, 0))
 
-        # Draw mask if available
-        if draw_masks and "segmentation" in ann and ann["segmentation"]:
-            overlay = vis_image.copy()
-            for seg in ann["segmentation"]:
-                if isinstance(seg, list) and len(seg) >= 6:
-                    pts = np.array(seg).reshape(-1, 2).astype(np.int32)
-                    cv2.fillPoly(overlay, [pts], color)
-            cv2.addWeighted(overlay, 0.3, vis_image, 0.7, 0, vis_image)
-
-        # Draw bounding box
         if draw_boxes and "bbox" in ann:
             x, y, bw, bh = [int(v) for v in ann["bbox"]]
             cv2.rectangle(vis_image, (x, y), (x + bw, y + bh), color, 2)
 
-        # Draw label
         if draw_labels and "bbox" in ann:
             x, y, bw, bh = [int(v) for v in ann["bbox"]]
             label = f"{cat_name}"
             if "score" in ann:
                 label += f" {ann['score']:.2f}"
-
-            # Background for text
             (text_w, text_h), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
             cv2.rectangle(vis_image, (x, y - text_h - 4), (x + text_w + 4, y), color, -1)
             cv2.putText(vis_image, label, (x + 2, y - 2), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
@@ -1273,6 +1375,34 @@ def _apply_padding_to_bbox(bbox: List[float], padding: int, img_width: int, img_
     return [float(x1), float(y1), float(x2 - x1), float(y2 - y1)]
 
 
+async def _thermal_cooldown(cooldown_s: float, vram_monitor) -> None:
+    """Sleep for cooldown_s, then add extra delay if GPU temperature is too high.
+
+    Thresholds are read from environment variables:
+      GPU_TEMP_THROTTLE_C  (default 80): start adding extra sleep
+      GPU_TEMP_MAX_C       (default 87): max extra sleep (10 s)
+
+    Extra sleep scales linearly from 2 s at throttle temp to 10 s at max temp.
+    """
+    await asyncio.sleep(cooldown_s)
+
+    if vram_monitor is None:
+        return
+
+    temp = vram_monitor.get_temperature()
+    if temp is None:
+        return
+
+    temp_throttle = int(os.environ.get("GPU_TEMP_THROTTLE_C", "80"))
+    temp_max = int(os.environ.get("GPU_TEMP_MAX_C", "87"))
+
+    if temp >= temp_throttle:
+        ratio = min(1.0, (temp - temp_throttle) / max(1, temp_max - temp_throttle))
+        extra = 2.0 + ratio * 8.0  # 2 s → 10 s
+        logger.info(f"GPU temp {temp}°C (throttle={temp_throttle}°C) — extra cooldown {extra:.1f}s")
+        await asyncio.sleep(extra)
+
+
 async def _process_labeling_job(job_id: str, resume_from: int = 0):
     """Process a labeling job - detect and segment objects in images.
 
@@ -1287,7 +1417,7 @@ async def _process_labeling_job(job_id: str, resume_from: int = 0):
     job = labeling_jobs[job_id]
     start_time = time.time()
 
-    image_paths = job["_image_paths"]
+    image_paths = list(job["_image_paths"])  # local copy — OOM retries insert here, not into the job dict
     classes = job["_classes"]  # These are the search prompts
     class_mapping = job.get("_class_mapping")  # Maps prompts to final class names
     min_confidence = job["_min_confidence"]
@@ -1306,8 +1436,15 @@ async def _process_labeling_job(job_id: str, resume_from: int = 0):
     # Calculate dynamic preview interval based on total images (aim for ~30-50 previews)
     total_images = len(image_paths)
     preview_interval = max(1, total_images // max_previews) if total_images > max_previews else 1
-    gc_interval = 5  # Run garbage collection every N images
+    gc_interval = 20  # Run garbage collection every N images
     yield_interval = 1  # Yield to event loop every N images
+    cooldown_ms = int(os.environ.get("LABELING_COOLDOWN_MS", "200"))
+    cooldown_s = cooldown_ms / 1000.0
+    # Cooldown between class inferences within a single image.
+    # Prevents GPU from running at 100% continuously when there are many classes,
+    # which causes overheating. Set to 0 to disable.
+    inter_class_cooldown_ms = int(os.environ.get("INTER_CLASS_COOLDOWN_MS", "50"))
+    inter_class_cooldown_s = inter_class_cooldown_ms / 1000.0
 
     # Initialize preview tracking
     preview_paths = job.get("_preview_paths", [])
@@ -1332,7 +1469,7 @@ async def _process_labeling_job(job_id: str, resume_from: int = 0):
     # Initialize VRAM monitor if available
     vram_monitor = None
     if VRAM_MONITOR_AVAILABLE and VRAMMonitor is not None:
-        vram_monitor = VRAMMonitor(threshold=0.7, check_interval=2)
+        vram_monitor = VRAMMonitor(threshold=0.6, check_interval=1)
         logger.info(f"VRAMMonitor initialized for job {job_id}")
 
     # Determine final category names
@@ -1386,6 +1523,9 @@ async def _process_labeling_job(job_id: str, resume_from: int = 0):
         }
         resume_from = 0  # Reset if no valid checkpoint
 
+    # Expose coco_result reference for partial-annotations endpoint
+    job["_coco_result"] = coco_result
+
     # Map final class names to category IDs
     category_map = {cls: i + 1 for i, cls in enumerate(final_classes)}
 
@@ -1395,8 +1535,16 @@ async def _process_labeling_job(job_id: str, resume_from: int = 0):
         if img_idx < resume_from:
             continue
 
+        # Check for cancellation
+        if job.get("status") in (JobStatus.CANCELLED, "cancelled"):
+            logger.info(f"Job {job_id} cancelled at image {img_idx}")
+            _save_labeling_checkpoint(
+                checkpoint_path, coco_result, annotation_id,
+                img_idx, job["objects_by_class"]
+            )
+            return
+
         job["current_image"] = Path(img_path).name
-        job["processed_images"] = img_idx
 
         # Log progress every 10 images
         if img_idx == 0 or (img_idx + 1) % 10 == 0:
@@ -1470,8 +1618,10 @@ async def _process_labeling_job(job_id: str, resume_from: int = 0):
                         mask_threshold=min_confidence,
                         target_sizes=target_sizes
                     )[0]
+                    del inputs, outputs  # Free GPU tensors immediately after inference
 
                     if 'masks' not in results or len(results['masks']) == 0:
+                        del results
                         continue
 
                     # Process each detected instance
@@ -1557,6 +1707,15 @@ async def _process_labeling_job(job_id: str, resume_from: int = 0):
                         job["objects_by_class"][final_class] = job["objects_by_class"].get(final_class, 0) + 1
                         job["total_objects_found"] += 1
 
+                    del results  # Free results after processing all instances
+
+                    # Inter-class cooldown: let the GPU thermal load drop between inferences.
+                    # Synchronize first to ensure GPU is idle during the sleep.
+                    if inter_class_cooldown_s > 0:
+                        if torch.cuda.is_available():
+                            torch.cuda.synchronize()
+                        await asyncio.sleep(inter_class_cooldown_s)
+
             # Deduplicate annotations for this image (remove overlapping detections)
             image_annotations = coco_result["annotations"][image_annotations_start_idx:]
             if len(image_annotations) > 1:
@@ -1603,6 +1762,9 @@ async def _process_labeling_job(job_id: str, resume_from: int = 0):
                         preview_count += 1
                         job["_preview_paths"] = preview_paths
                         logger.debug(f"Saved preview {preview_count}/{max_previews} at image {img_idx + 1}")
+
+            # Update progress after successful processing
+            job["processed_images"] = img_idx + 1
 
             # Save checkpoint periodically and update database
             if (img_idx + 1) % checkpoint_interval == 0:
@@ -1652,16 +1814,15 @@ async def _process_labeling_job(job_id: str, resume_from: int = 0):
                 del image, image_rgb, pil_image
                 # Clear CUDA cache if available
                 if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
                     torch.cuda.synchronize()
+                    torch.cuda.empty_cache()
                 gc.collect()
                 if vram_monitor is not None:
                     stats = vram_monitor.get_vram_stats()
                     logger.debug(f"VRAM cleanup at image {img_idx + 1}: {stats.get('allocated_gb', 0):.2f}GB")
 
-                # Yield to event loop to allow health checks and other operations
-                if (img_idx + 1) % yield_interval == 0:
-                    await asyncio.sleep(0)
+            # Cooldown between images: fixed delay + adaptive extra if GPU runs hot
+            await _thermal_cooldown(cooldown_s, vram_monitor)
 
         except asyncio.TimeoutError:
             # Image processing took too long (>30s), skip it
@@ -1672,12 +1833,15 @@ async def _process_labeling_job(job_id: str, resume_from: int = 0):
             # Clean up
             gc.collect()
             if torch.cuda.is_available():
+                torch.cuda.synchronize()
                 torch.cuda.empty_cache()
 
         except torch.cuda.OutOfMemoryError as e:
             # OOM: Clean memory and retry with exponential backoff
             consecutive_errors += 1
-            torch.cuda.empty_cache()
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+                torch.cuda.empty_cache()
             gc.collect()
 
             retry_count = job.get("_retry_count", {}).get(img_path, 0)
@@ -1706,6 +1870,7 @@ async def _process_labeling_job(job_id: str, resume_from: int = 0):
             # Clean up on error
             gc.collect()
             if torch.cuda.is_available():
+                torch.cuda.synchronize()
                 torch.cuda.empty_cache()
 
         # Check abort conditions
@@ -1812,7 +1977,7 @@ async def _process_relabeling_job(job_id: str):
     relabel_mode = job["_relabel_mode"]
     logger.info(f"[RELABEL] Mode: {relabel_mode}, Classes: {job.get('_classes', [])[:5]}...")
     coco_data = job.get("_coco_data")
-    image_paths = job["_image_paths"]
+    image_paths = list(job["_image_paths"])  # local copy — OOM retries insert here, not into the job dict
     image_lookup = job["_image_lookup"]
     image_id_map = job.get("_image_id_map", {})  # filename -> original_image_id
     classes = job["_classes"]
@@ -1820,7 +1985,15 @@ async def _process_relabeling_job(job_id: str):
     simplify_polygons = job["_simplify_polygons"]
     deduplication_strategy = job.get("_deduplication_strategy", "confidence")  # Deduplication strategy
     output_dir = Path(job["output_dir"])
-    gc_interval = 5  # Run garbage collection every N images
+    gc_interval = 20  # Run garbage collection every N images
+    cooldown_ms = int(os.environ.get("LABELING_COOLDOWN_MS", "200"))
+    cooldown_s = cooldown_ms / 1000.0
+    inter_class_cooldown_ms = int(os.environ.get("INTER_CLASS_COOLDOWN_MS", "50"))
+    inter_class_cooldown_s = inter_class_cooldown_ms / 1000.0
+
+    vram_monitor = None
+    if VRAM_MONITOR_AVAILABLE and VRAMMonitor is not None:
+        vram_monitor = VRAMMonitor(threshold=0.6, check_interval=1)
 
     # Initialize result based on mode
     if relabel_mode == "add" and coco_data:
@@ -1849,6 +2022,9 @@ async def _process_relabeling_job(job_id: str):
         }
         annotation_id = 1
 
+    # Expose coco_result reference for partial-annotations endpoint
+    job["_coco_result"] = coco_result
+
     category_map = {c["name"]: c["id"] for c in coco_result.get("categories", [])}
     prompt_optimizer = get_prompt_optimizer()
     logger.info(f"[RELABEL] Category map: {category_map}")
@@ -1856,8 +2032,12 @@ async def _process_relabeling_job(job_id: str):
 
     # Process images
     for img_idx, img_path in enumerate(image_paths):
+        # Check for cancellation
+        if job.get("status") in (JobStatus.CANCELLED, "cancelled"):
+            logger.info(f"[RELABEL] Job {job_id} cancelled at image {img_idx}")
+            return
+
         job["current_image"] = Path(img_path).name
-        job["processed_images"] = img_idx
 
         if img_idx == 0 or (img_idx + 1) % 10 == 0:
             logger.info(f"[RELABEL] Job {job_id}: Processing image {img_idx + 1}/{len(image_paths)} ({100*(img_idx+1)/len(image_paths):.1f}%) - {Path(img_path).name}")
@@ -1917,10 +2097,12 @@ async def _process_relabeling_job(job_id: str):
                             inputs["original_sizes"],
                             inputs["reshaped_input_sizes"]
                         )
+                        del inputs, outputs  # Free GPU tensors immediately after inference
 
                         if len(masks) > 0 and len(masks[0]) > 0:
                             mask = masks[0][0]
                             mask_np = mask.cpu().numpy().astype(np.uint8) * 255
+                            del masks  # Free after extracting the numpy array
 
                             if mask_np.shape != (h, w):
                                 mask_np = cv2.resize(mask_np, (w, h), interpolation=cv2.INTER_NEAREST)
@@ -1936,6 +2118,8 @@ async def _process_relabeling_job(job_id: str):
                                 ann["segmentation"] = polygons
                                 ann["area"] = int(np.sum(mask_np > 0))
                                 job["total_objects_found"] += 1
+                        else:
+                            del masks  # Free even if no usable masks
 
             else:
                 # Get existing annotations for this image (for deduplication in "add" mode)
@@ -1966,8 +2150,10 @@ async def _process_relabeling_job(job_id: str):
                         mask_threshold=min_confidence,
                         target_sizes=target_sizes
                     )[0]
+                    del inputs, outputs  # Free GPU tensors immediately after inference
 
                     if 'masks' not in results:
+                        del results
                         continue
 
                     for mask, score in zip(results['masks'], results['scores']):
@@ -2033,6 +2219,14 @@ async def _process_relabeling_job(job_id: str):
                             job["objects_by_class"][cls] = job["objects_by_class"].get(cls, 0) + 1
                             job["total_objects_found"] += 1
 
+                    del results  # Free results after processing all instances
+
+                    # Inter-class cooldown: let the GPU thermal load drop between inferences.
+                    if inter_class_cooldown_s > 0:
+                        if torch.cuda.is_available():
+                            torch.cuda.synchronize()
+                        await asyncio.sleep(inter_class_cooldown_s)
+
             # Deduplicate annotations for this image (remove overlapping detections across all classes)
             image_anns = coco_result["annotations"][image_annotations_start_idx:]
             if len(image_anns) > 1:
@@ -2046,15 +2240,19 @@ async def _process_relabeling_job(job_id: str):
                     annotation_id = len(coco_result["annotations"]) + 1
                     logger.debug(f"[RELABEL] Deduplicated {removed_count} overlapping annotations for {Path(img_path).name}")
 
-            # Garbage collection and yielding
+            # Update progress after successful processing
+            job["processed_images"] = img_idx + 1
+
+            # Garbage collection
             if (img_idx + 1) % gc_interval == 0:
                 del image, image_rgb, pil_image
                 if torch.cuda.is_available():
+                    torch.cuda.synchronize()
                     torch.cuda.empty_cache()
                 gc.collect()
 
-            # Yield to event loop
-            await asyncio.sleep(0)
+            # Cooldown between images: fixed delay + adaptive extra if GPU runs hot
+            await _thermal_cooldown(cooldown_s, vram_monitor)
 
         except asyncio.TimeoutError:
             # Image processing took too long (>30s), skip it
@@ -2063,12 +2261,14 @@ async def _process_relabeling_job(job_id: str):
             logger.warning(error_msg)
             gc.collect()
             if torch.cuda.is_available():
+                torch.cuda.synchronize()
                 torch.cuda.empty_cache()
 
         except Exception as e:
             job["errors"].append(f"Error processing {img_path}: {str(e)}")
             gc.collect()
             if torch.cuda.is_available():
+                torch.cuda.synchronize()
                 torch.cuda.empty_cache()
 
     # Save results

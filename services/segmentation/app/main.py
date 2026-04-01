@@ -123,6 +123,7 @@ async def health_check():
         sam3_loading=state.sam3_loading,
         sam3_load_progress=state.sam3_load_progress,
         sam3_load_error=state.sam3_load_error,
+        sam3_model_id=state.sam3_model_id,
         gpu_available=state.gpu_available,
         model_loaded=state.scene_analyzer is not None,
         version="1.0.0",
@@ -138,6 +139,7 @@ async def model_status():
             "loading": state.sam3_loading,
             "progress": state.sam3_load_progress,
             "error": state.sam3_load_error,
+            "model_id": state.sam3_model_id,
         },
         "gpu": {
             "available": state.gpu_available,

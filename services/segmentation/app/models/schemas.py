@@ -109,6 +109,7 @@ class HealthResponse(BaseModel):
     sam3_loading: bool = False  # True while SAM3 is being loaded in background
     sam3_load_progress: str = ""  # Progress message during loading
     sam3_load_error: Optional[str] = None  # Error message if loading failed
+    sam3_model_id: Optional[str] = None   # ID del modelo cargado
     gpu_available: bool
     model_loaded: bool
     version: str = "1.0.0"

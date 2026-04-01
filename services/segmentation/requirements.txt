@@ -26,3 +26,5 @@ accelerate>=0.25.0
 pydantic>=2.5.0
 python-dotenv>=1.0.0
 loguru>=0.7.0
+# GPU temperature monitoring (optional, for thermal throttling)
+pynvml>=11.0.0

@@ -63,11 +63,14 @@ class ServiceState:
     debug_scene_analyzer = None
     sam3_model = None
     sam3_processor = None
+    sam3_tracker_model = None      # Sam3TrackerModel para segmentación interactiva por puntos
+    sam3_tracker_processor = None  # Sam3TrackerProcessor
     device: str = "cpu"
     sam3_available: bool = False
     sam3_loading: bool = False
     sam3_load_error: Optional[str] = None
     sam3_load_progress: str = ""
+    sam3_model_id: Optional[str] = None
     gpu_available: bool = False
     object_extractor: Optional["ObjectExtractor"] = None
     db: Optional["JobDatabase"] = None
@@ -185,11 +188,23 @@ def _load_sam3_sync():
         model_id = os.environ.get("SAM3_MODEL_ID", "facebook/sam3")
         hf_token = os.environ.get("HF_TOKEN")
 
+        if not hf_token:
+            logger.warning("[Background] HF_TOKEN not set — facebook/sam3 is a gated model and requires a valid token")
+
         logger.info(f"[Background] Loading SAM3 model: {model_id}")
         state.sam3_load_progress = f"Loading processor from {model_id}..."
         load_start = time.time()
 
-        state.sam3_processor = Sam3Processor.from_pretrained(model_id, token=hf_token)
+        try:
+            state.sam3_processor = Sam3Processor.from_pretrained(model_id, token=hf_token)
+        except Exception as proc_err:
+            cause = proc_err.__cause__ or proc_err.__context__
+            root = f" (caused by: {cause})" if cause else ""
+            raise RuntimeError(
+                f"Failed to load Sam3Processor for '{model_id}'{root}. "
+                f"If the model is gated, accept the terms at https://huggingface.co/{model_id} "
+                f"and ensure HF_TOKEN is set and has 'read' scope."
+            ) from proc_err
         proc_time = time.time() - load_start
         logger.info(f"[Background] Processor loaded in {proc_time:.1f}s")
         state.sam3_load_progress = "Loading model weights..."
@@ -214,11 +229,27 @@ def _load_sam3_sync():
         model_time = time.time() - model_start
         logger.info(f"[Background] Model loaded in {model_time:.1f}s")
 
+        # Sam3TrackerModel is NOT loaded: facebook/sam3 checkpoint lacks the interactive
+        # decoder weights (mask_decoder.*, prompt_encoder.*) so it would produce garbage.
+        # Instead, Sam3TrackerProcessor is loaded for its input_points/input_labels API,
+        # and combined with Sam3Model (which provides the decoder) + input_ids from
+        # Sam3Processor for point-guided segmentation.
+        state.sam3_tracker_model = None
+        try:
+            from transformers import Sam3TrackerProcessor
+            tracker_proc_start = time.time()
+            state.sam3_tracker_processor = Sam3TrackerProcessor.from_pretrained(model_id, token=hf_token)
+            logger.info(f"[Background] Sam3TrackerProcessor loaded in {time.time() - tracker_proc_start:.1f}s")
+        except Exception as tp_err:
+            logger.warning(f"[Background] Sam3TrackerProcessor not available: {tp_err}")
+            state.sam3_tracker_processor = None
+
         state.sam3_load_progress = "Initializing scene analyzer..."
         init_scene_analyzer()
         init_object_extractor()
 
         state.sam3_available = True
+        state.sam3_model_id = model_id
         state.sam3_load_progress = "Ready"
         total_time = time.time() - load_start
         logger.info(f"[Background] SAM3 fully initialized in {total_time:.1f}s total")
