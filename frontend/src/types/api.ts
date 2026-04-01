@@ -16,6 +16,8 @@ export interface LabelingJob {
   processed_images: number
   total_images: number
   annotations_created: number
+  current_image?: string
+  output_dir?: string
   objects_by_class?: Record<string, number>
   quality_metrics?: QualityMetrics
   warnings?: string[]
@@ -25,6 +27,18 @@ export interface LabelingJob {
 export interface LabelingPreview {
   filename: string
   image_data: string
+}
+
+export interface PartialAnnotationsResponse {
+  job_id: string
+  available: boolean
+  data?: {
+    images: CocoImage[]
+    annotations: CocoAnnotation[]
+    categories: CocoCategory[]
+  }
+  processed_images: number
+  total_images: number
 }
 
 // SAM3

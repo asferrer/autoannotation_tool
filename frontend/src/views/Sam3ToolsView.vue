@@ -29,7 +29,7 @@ const mode = ref<'text' | 'convert'>('text')
 const imagePath = ref('')
 const textPrompt = ref('')
 const textLoading = ref(false)
-const textResult = ref<SegmentationResult | null>(null)
+const textResult = ref<{ success: boolean; segmentation_coco: number[][] | null; bbox: number[] | null; confidence: number; error?: string } | null>(null)
 
 // Dataset conversion state
 const cocoJsonPath = ref('')
@@ -57,7 +57,7 @@ async function runTextSegmentation() {
     textResult.value = await segmentWithText(imagePath.value, textPrompt.value)
     uiStore.showSuccess(
       'Segmentation Complete',
-      `Found ${textResult.value.masks.length} object(s)`
+      textResult.value?.success ? 'Mask generated' : (textResult.value?.error ?? 'No mask found')
     )
   } catch (e: any) {
     error.value = e.message || 'Segmentation failed'
@@ -214,24 +214,20 @@ onUnmounted(() => {
 
         <div v-else class="space-y-4">
           <div class="flex items-center justify-between">
-            <span class="text-gray-400">Objects Found</span>
-            <span class="text-2xl font-bold text-primary">{{ textResult.masks.length }}</span>
+            <span class="text-gray-400">Result</span>
+            <span class="text-2xl font-bold text-primary">{{ textResult.success ? '1 mask' : 'None' }}</span>
           </div>
 
           <div class="space-y-2">
-            <div
-              v-for="(score, index) in textResult.scores"
-              :key="index"
-              class="flex items-center gap-3"
-            >
-              <span class="w-20 text-sm text-gray-400">Object {{ (index as number) + 1 }}</span>
+            <div v-if="textResult.success" class="flex items-center gap-3">
+              <span class="w-20 text-sm text-gray-400">Confidence</span>
               <div class="flex-1 h-2 bg-background-tertiary rounded-full overflow-hidden">
                 <div
                   class="h-full bg-primary"
-                  :style="{ width: `${score * 100}%` }"
+                  :style="{ width: `${(textResult.confidence ?? 0) * 100}%` }"
                 />
               </div>
-              <span class="text-sm text-white">{{ (score * 100).toFixed(1) }}%</span>
+              <span class="text-sm text-white">{{ ((textResult.confidence ?? 0) * 100).toFixed(1) }}%</span>
             </div>
           </div>
         </div>

@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { useUiStore } from '@/stores/ui'
+import { useTaskStore } from '@/stores/task'
 import {
   startLabeling,
   startRelabeling,
@@ -14,6 +16,7 @@ import BaseInput from '@/components/ui/BaseInput.vue'
 import BaseSelect from '@/components/ui/BaseSelect.vue'
 import DirectoryBrowser from '@/components/common/DirectoryBrowser.vue'
 import AlertBox from '@/components/common/AlertBox.vue'
+import LiveAnnotationPreview from '@/components/labeling/LiveAnnotationPreview.vue'
 import {
   Tags,
   Play,
@@ -31,6 +34,7 @@ import {
   Utensils,
   Shirt,
   Trash2,
+  PenSquare,
 } from 'lucide-vue-next'
 import type { LabelingJob, LabelingTaskType, RelabelMode } from '@/types/api'
 
@@ -39,7 +43,10 @@ interface LabelingPreview {
   image_data: string
 }
 
+const router = useRouter()
 const uiStore = useUiStore()
+const taskStore = useTaskStore()
+
 
 // Predefined labeling templates
 interface LabelingTemplate {
@@ -129,9 +136,16 @@ const labelingTemplates: LabelingTemplate[] = [
 
 const selectedTemplate = ref<string | null>(null)
 
+// Stable-ID wrappers for list items — prevents Vue reusing the wrong DOM node on splice
+interface DirEntry { id: number; path: string }
+interface ClassEntry { id: number; name: string }
+let _nextId = 0
+const mkDir = (path = ''): DirEntry => ({ id: _nextId++, path })
+const mkClass = (name = ''): ClassEntry => ({ id: _nextId++, name })
+
 function applyTemplate(template: LabelingTemplate) {
   selectedTemplate.value = template.id
-  classes.value = [...template.classes]
+  classes.value = template.classes.map(mkClass)
   taskType.value = template.taskType
   minConfidence.value = template.confidence
   uiStore.showSuccess(
@@ -142,12 +156,12 @@ function applyTemplate(template: LabelingTemplate) {
 
 function clearTemplate() {
   selectedTemplate.value = null
-  classes.value = ['']
+  classes.value = [mkClass()]
 }
 
 // Form state
-const imageDirectories = ref<string[]>([''])
-const classes = ref<string[]>([''])
+const imageDirectories = ref<DirEntry[]>([mkDir()])
+const classes = ref<ClassEntry[]>([mkClass()])
 const outputDir = ref('/app/output/labeled')
 const minConfidence = ref(0.3)
 const taskType = ref<LabelingTaskType>('detection')
@@ -199,7 +213,7 @@ async function loadDirectories() {
 }
 
 function addDirectory() {
-  imageDirectories.value.push('')
+  imageDirectories.value.push(mkDir())
 }
 
 function removeDirectory(index: number) {
@@ -207,7 +221,7 @@ function removeDirectory(index: number) {
 }
 
 function addClass() {
-  classes.value.push('')
+  classes.value.push(mkClass())
 }
 
 function removeClass(index: number) {
@@ -215,8 +229,8 @@ function removeClass(index: number) {
 }
 
 async function startJob() {
-  const validDirs = imageDirectories.value.filter((d: string) => d.trim())
-  const validClasses = classes.value.filter((c: string) => c.trim())
+  const validDirs = imageDirectories.value.map((d: DirEntry) => d.path).filter((p: string) => p.trim())
+  const validClasses = classes.value.map((c: ClassEntry) => c.name).filter((n: string) => n.trim())
 
   if (validDirs.length === 0) {
     uiStore.showError('Missing Input', 'Please add at least one image directory')
@@ -235,6 +249,8 @@ async function startJob() {
 
   loading.value = true
   error.value = null
+  recentPreviews.value = []
+  selectedPreview.value = null
 
   try {
     let response
@@ -270,7 +286,7 @@ async function startJob() {
     startPolling(response.job_id)
   } catch (e: any) {
     error.value = e.message || 'Failed to start labeling job'
-    uiStore.showError('Job Failed', error.value)
+    uiStore.showError('Job Failed', error.value ?? 'Unknown error')
   } finally {
     loading.value = false
   }
@@ -334,6 +350,23 @@ async function cancelCurrentJob() {
   }
 }
 
+function openInAnnotate() {
+  if (!currentJob.value || currentJob.value.status !== 'completed') return
+  const detectedClasses = Object.keys(currentJob.value.objects_by_class ?? {})
+  const labels = detectedClasses.map((name, i) => ({
+    id: i + 1,
+    name,
+    color: taskStore.LABEL_COLORS[i % taskStore.LABEL_COLORS.length],
+  }))
+  const imageDir = imageDirectories.value.filter((d: DirEntry) => d.path.trim())[0]?.path ?? ''
+  // output_dir is the real subdirectory created by the backend (e.g. labeling_20240101_abc12345/)
+  const cocoPath = currentJob.value.output_dir
+    ? `${currentJob.value.output_dir}/annotations.json`
+    : ''
+  taskStore.createTask(`Auto-labeled (${new Date().toLocaleDateString()})`, imageDir, cocoPath, labels)
+  router.push('/annotate')
+}
+
 function stopPolling() {
   if (pollingInterval) {
     clearInterval(pollingInterval)
@@ -343,9 +376,8 @@ function stopPolling() {
     clearInterval(previewPollingInterval)
     previewPollingInterval = null
   }
-  // Clear previews on job completion
-  recentPreviews.value = []
-  selectedPreview.value = null
+  // Previews are intentionally kept visible after the job completes so the user
+  // can inspect them. They are cleared only when a new job starts (startJob).
 }
 
 onMounted(() => {
@@ -437,12 +469,12 @@ onUnmounted(() => {
 
         <div class="space-y-3">
           <div
-            v-for="(_dir, index) in imageDirectories"
-            :key="index"
+            v-for="(dir, index) in imageDirectories"
+            :key="dir.id"
             class="flex gap-2 items-start"
           >
             <DirectoryBrowser
-              v-model="imageDirectories[index]"
+              v-model="dir.path"
               :label="index === 0 ? '' : undefined"
               placeholder="/app/datasets/images"
               path-mode="input"
@@ -469,12 +501,12 @@ onUnmounted(() => {
           <h4 class="text-md font-medium text-white mb-3">Classes to Detect</h4>
           <div class="space-y-3">
             <div
-              v-for="(_cls, index) in classes"
-              :key="index"
+              v-for="(cls, index) in classes"
+              :key="cls.id"
               class="flex gap-2"
             >
               <BaseInput
-                v-model="classes[index]"
+                v-model="cls.name"
                 placeholder="e.g. car, person, dog"
                 class="flex-1"
               />
@@ -651,6 +683,9 @@ onUnmounted(() => {
           <p class="text-sm text-gray-400">
             {{ currentJob.processed_images }} / {{ currentJob.total_images }} images |
             {{ currentJob.annotations_created }} annotations created
+            <span v-if="currentJob.current_image && currentJob.status === 'running'" class="block text-xs text-gray-500 mt-0.5 truncate">
+              Processing: {{ currentJob.current_image }}
+            </span>
           </p>
         </div>
         <span class="text-2xl font-bold text-primary">{{ currentJob.progress }}%</span>
@@ -727,6 +762,14 @@ onUnmounted(() => {
         </ul>
       </AlertBox>
 
+      <!-- Open in Annotate (when completed) -->
+      <div v-if="currentJob.status === 'completed'" class="mt-4 flex justify-end">
+        <BaseButton @click="openInAnnotate" variant="primary">
+          <PenSquare class="h-4 w-4" />
+          Open in Annotate
+        </BaseButton>
+      </div>
+
       <!-- Recent Previews -->
       <div v-if="recentPreviews.length > 0" class="mt-4">
         <h4 class="text-sm font-medium text-gray-400 mb-2">Recent Previews</h4>
@@ -741,6 +784,13 @@ onUnmounted(() => {
           </button>
         </div>
       </div>
+
+      <!-- Live Annotation Preview -->
+      <LiveAnnotationPreview
+        v-if="currentJob && (currentJob.status === 'running' || currentJob.status === 'completed')"
+        :job-id="currentJob.job_id"
+        :is-running="currentJob.status === 'running'"
+      />
     </div>
 
     <!-- Preview Modal -->

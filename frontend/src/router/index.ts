@@ -8,28 +8,16 @@ const routes = [
     meta: { title: 'Dashboard' },
   },
   {
-    path: '/auto-labeling',
-    name: 'auto-labeling',
-    component: () => import('@/views/AutoLabelingView.vue'),
-    meta: { title: 'Auto Labeling' },
+    path: '/create-task',
+    name: 'create-task',
+    component: () => import('@/views/CreateTaskView.vue'),
+    meta: { title: 'Create Task' },
   },
   {
-    path: '/annotation-review',
-    name: 'annotation-review',
-    component: () => import('@/views/AnnotationReviewView.vue'),
-    meta: { title: 'Annotation Review', hasUnsavedChanges: true },
-  },
-  {
-    path: '/label-manager',
-    name: 'label-manager',
-    component: () => import('@/views/LabelManagerView.vue'),
-    meta: { title: 'Label Manager' },
-  },
-  {
-    path: '/sam3-tools',
-    name: 'sam3-tools',
-    component: () => import('@/views/Sam3ToolsView.vue'),
-    meta: { title: 'SAM3 Tools' },
+    path: '/annotate',
+    name: 'annotate',
+    component: () => import('@/views/AnnotateView.vue'),
+    meta: { title: 'Annotate', fullscreen: true, hasUnsavedChanges: true },
   },
   {
     path: '/settings',
@@ -54,15 +42,11 @@ router.beforeEach((to, from, next) => {
   const title = to.meta.title as string | undefined
   document.title = title ? `${title} | Annotation Tool` : 'Annotation Tool'
 
-  // Unsaved changes guard for annotation review
-  if (from.meta.hasUnsavedChanges && from.name === 'annotation-review') {
+  if (from.meta.hasUnsavedChanges) {
     const hasChanges = document.querySelector('[data-unsaved="true"]')
     if (hasChanges) {
       const confirmed = window.confirm('You have unsaved changes. Are you sure you want to leave?')
-      if (!confirmed) {
-        next(false)
-        return
-      }
+      if (!confirmed) { next(false); return }
     }
   }
 
