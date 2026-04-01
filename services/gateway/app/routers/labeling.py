@@ -39,13 +39,18 @@ class LabelingStartRequest(BaseModel):
 
 
 class RelabelingRequest(BaseModel):
-    coco_json_path: str
-    images_dir: str
+    image_directories: List[str] = Field(..., min_length=1)
     output_dir: str
-    classes: List[str] = Field(..., min_length=1)
-    mode: str = Field(default="add")
-    min_confidence: float = Field(default=0.5)
+    relabel_mode: str = Field(default="add")
+    new_classes: Optional[List[str]] = None
+    min_confidence: float = Field(default=0.5, ge=0.1, le=1.0)
+    coco_json_path: Optional[str] = None
+    output_formats: List[str] = Field(default=["coco"])
     task_type: str = Field(default="segmentation")
+    simplify_polygons: bool = True
+    preview_mode: bool = False
+    preview_count: int = Field(default=20, ge=5, le=100)
+    deduplication_strategy: str = Field(default="confidence")
 
 
 # ---------- Proxy helper ----------
@@ -100,6 +105,11 @@ async def get_job_result(job_id: str):
 @router.get("/jobs/{job_id}/previews")
 async def get_job_previews(job_id: str):
     return await _proxy("GET", f"/labeling/jobs/{job_id}/previews")
+
+
+@router.get("/jobs/{job_id}/partial-annotations")
+async def get_partial_annotations(job_id: str):
+    return await _proxy("GET", f"/labeling/jobs/{job_id}/partial-annotations")
 
 
 @router.delete("/jobs/{job_id}")

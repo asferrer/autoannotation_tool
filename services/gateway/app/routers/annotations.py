@@ -18,6 +18,15 @@ from pydantic import BaseModel
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Annotations"], prefix="/annotations")
 
+# Per-path async locks prevent concurrent read-modify-write races on the same file
+_coco_locks: Dict[str, asyncio.Lock] = {}
+
+
+def _get_coco_lock(path: str) -> asyncio.Lock:
+    if path not in _coco_locks:
+        _coco_locks[path] = asyncio.Lock()
+    return _coco_locks[path]
+
 SEGMENTATION_SERVICE_URL = os.environ.get(
     "SEGMENTATION_SERVICE_URL", "http://segmentation:8002"
 )
@@ -62,6 +71,28 @@ class ReannotateRequest(BaseModel):
     annotation_id: int
 
 
+class SegmentBboxRequest(BaseModel):
+    image_path: str
+    bbox: List[float]  # [x, y, w, h] in image coordinates
+    text_hint: Optional[str] = None  # nombre de categoría para mejorar la segmentación
+
+
+class SegmentPointRequest(BaseModel):
+    image_path: str
+    points: List[List[float]]
+    labels: List[int]
+    text_hint: Optional[str] = None  # category name for better PCS segmentation quality
+    return_polygon: bool = True
+    simplify_polygon: bool = True
+    simplify_tolerance: float = 2.0
+
+
+class ExportRequest(BaseModel):
+    coco_json_path: str
+    output_dir: str
+    formats: List[str] = ["coco"]
+
+
 # ---------- Helpers ----------
 
 def _read_coco_sync(path: str) -> Dict[str, Any]:
@@ -90,6 +121,86 @@ async def _read_coco(path: str) -> Dict[str, Any]:
 
 async def _write_coco(path: str, data: Dict[str, Any]):
     await asyncio.to_thread(_write_coco_sync, path, data)
+
+
+def _export_yolo_sync(coco_data: Dict[str, Any], output_dir: Path) -> str:
+    labels_dir = output_dir / "yolo" / "labels"
+    labels_dir.mkdir(parents=True, exist_ok=True)
+
+    image_dims = {img["id"]: (img["width"], img["height"]) for img in coco_data.get("images", [])}
+    image_names = {img["id"]: img["file_name"] for img in coco_data.get("images", [])}
+    categories = coco_data.get("categories", [])
+    cat_map = {c["id"]: i for i, c in enumerate(categories)}
+
+    anns_by_image: Dict[int, list] = {}
+    for ann in coco_data.get("annotations", []):
+        anns_by_image.setdefault(ann["image_id"], []).append(ann)
+
+    for img_id, anns in anns_by_image.items():
+        if img_id not in image_dims:
+            continue
+        w, h = image_dims[img_id]
+        lines = []
+        for ann in anns:
+            bbox = ann.get("bbox", [0, 0, 0, 0])
+            x_center = (bbox[0] + bbox[2] / 2) / w
+            y_center = (bbox[1] + bbox[3] / 2) / h
+            lines.append(
+                f"{cat_map.get(ann['category_id'], 0)} "
+                f"{x_center:.6f} {y_center:.6f} "
+                f"{bbox[2] / w:.6f} {bbox[3] / h:.6f}"
+            )
+        label_file = labels_dir / (Path(image_names[img_id]).stem + ".txt")
+        label_file.write_text("\n".join(lines))
+
+    classes_file = output_dir / "yolo" / "classes.txt"
+    classes_file.write_text("\n".join(c["name"] for c in categories))
+    return str(output_dir / "yolo")
+
+
+def _export_voc_sync(coco_data: Dict[str, Any], output_dir: Path) -> str:
+    annotations_dir = output_dir / "voc" / "Annotations"
+    annotations_dir.mkdir(parents=True, exist_ok=True)
+
+    image_info = {img["id"]: img for img in coco_data.get("images", [])}
+    cat_names = {c["id"]: c["name"] for c in coco_data.get("categories", [])}
+
+    anns_by_image: Dict[int, list] = {}
+    for ann in coco_data.get("annotations", []):
+        anns_by_image.setdefault(ann["image_id"], []).append(ann)
+
+    for img_id, anns in anns_by_image.items():
+        if img_id not in image_info:
+            continue
+        img = image_info[img_id]
+        xml_lines = [
+            '<?xml version="1.0" encoding="UTF-8"?>',
+            "<annotation>",
+            f'  <filename>{img["file_name"]}</filename>',
+            "  <size>",
+            f'    <width>{img["width"]}</width>',
+            f'    <height>{img["height"]}</height>',
+            "    <depth>3</depth>",
+            "  </size>",
+        ]
+        for ann in anns:
+            bbox = ann.get("bbox", [0, 0, 0, 0])
+            xml_lines += [
+                "  <object>",
+                f'    <name>{cat_names.get(ann["category_id"], "unknown")}</name>',
+                "    <bndbox>",
+                f'      <xmin>{int(bbox[0])}</xmin>',
+                f'      <ymin>{int(bbox[1])}</ymin>',
+                f'      <xmax>{int(bbox[0] + bbox[2])}</xmax>',
+                f'      <ymax>{int(bbox[1] + bbox[3])}</ymax>',
+                "    </bndbox>",
+                "  </object>",
+            ]
+        xml_lines.append("</annotation>")
+        xml_file = annotations_dir / (Path(img["file_name"]).stem + ".xml")
+        xml_file.write_text("\n".join(xml_lines))
+
+    return str(output_dir / "voc")
 
 
 # ---------- Endpoints ----------
@@ -142,64 +253,68 @@ async def get_image_annotations(image_id: int, coco_json_path: str = Query(...))
 @router.post("/save")
 async def save_annotations(request: SaveAnnotationsRequest):
     """Save complete COCO JSON data."""
-    await _write_coco(request.coco_json_path, request.data)
+    async with _get_coco_lock(request.coco_json_path):
+        await _write_coco(request.coco_json_path, request.data)
     return {"status": "saved", "path": request.coco_json_path}
 
 
 @router.post("/create")
 async def create_annotation(request: CreateAnnotationRequest):
     """Create a new annotation."""
-    data = await _read_coco(request.coco_json_path)
-    annotations = data.get("annotations", [])
+    async with _get_coco_lock(request.coco_json_path):
+        data = await _read_coco(request.coco_json_path)
+        annotations = data.get("annotations", [])
 
-    max_id = max((a["id"] for a in annotations), default=0)
-    new_ann: Dict[str, Any] = {
-        "id": max_id + 1,
-        "image_id": request.image_id,
-        "category_id": request.category_id,
-        "bbox": request.bbox,
-        "area": request.area or (request.bbox[2] * request.bbox[3]),
-        "iscrowd": 0,
-    }
-    if request.segmentation:
-        new_ann["segmentation"] = request.segmentation
+        max_id = max((a["id"] for a in annotations), default=0)
+        new_ann: Dict[str, Any] = {
+            "id": max_id + 1,
+            "image_id": request.image_id,
+            "category_id": request.category_id,
+            "bbox": request.bbox,
+            "area": request.area or (request.bbox[2] * request.bbox[3]),
+            "iscrowd": 0,
+        }
+        if request.segmentation:
+            new_ann["segmentation"] = request.segmentation
 
-    data["annotations"].append(new_ann)
-    await _write_coco(request.coco_json_path, data)
+        data["annotations"].append(new_ann)
+        await _write_coco(request.coco_json_path, data)
     return new_ann
 
 
 @router.put("/update")
 async def update_annotation(request: UpdateAnnotationRequest):
     """Update an existing annotation."""
-    data = await _read_coco(request.coco_json_path)
-    ann = next(
-        (a for a in data.get("annotations", []) if a["id"] == request.annotation_id),
-        None,
-    )
-    if not ann:
-        raise HTTPException(404, f"Annotation {request.annotation_id} not found")
+    async with _get_coco_lock(request.coco_json_path):
+        data = await _read_coco(request.coco_json_path)
+        ann = next(
+            (a for a in data.get("annotations", []) if a["id"] == request.annotation_id),
+            None,
+        )
+        if not ann:
+            raise HTTPException(404, f"Annotation {request.annotation_id} not found")
 
-    if request.bbox is not None:
-        ann["bbox"] = request.bbox
-        ann["area"] = request.bbox[2] * request.bbox[3]
-    if request.category_id is not None:
-        ann["category_id"] = request.category_id
-    if request.segmentation is not None:
-        ann["segmentation"] = request.segmentation
+        if request.bbox is not None:
+            ann["bbox"] = request.bbox
+            ann["area"] = request.bbox[2] * request.bbox[3]
+        if request.category_id is not None:
+            ann["category_id"] = request.category_id
+        if request.segmentation is not None:
+            ann["segmentation"] = request.segmentation
 
-    await _write_coco(request.coco_json_path, data)
+        await _write_coco(request.coco_json_path, data)
     return ann
 
 
 @router.post("/delete")
 async def delete_annotation(request: DeleteAnnotationRequest):
     """Delete an annotation."""
-    data = await _read_coco(request.coco_json_path)
-    data["annotations"] = [
-        a for a in data.get("annotations", []) if a["id"] != request.annotation_id
-    ]
-    await _write_coco(request.coco_json_path, data)
+    async with _get_coco_lock(request.coco_json_path):
+        data = await _read_coco(request.coco_json_path)
+        data["annotations"] = [
+            a for a in data.get("annotations", []) if a["id"] != request.annotation_id
+        ]
+        await _write_coco(request.coco_json_path, data)
     return {"status": "deleted", "annotation_id": request.annotation_id}
 
 
@@ -232,9 +347,146 @@ async def reannotate_with_sam3(request: ReannotateRequest):
             if resp.status_code == 200:
                 result = resp.json()
                 if result.get("segmentation"):
-                    ann["segmentation"] = result["segmentation"]
-                    await _write_coco(request.coco_json_path, data)
+                    async with _get_coco_lock(request.coco_json_path):
+                        # Re-read to avoid overwriting concurrent edits
+                        data = await _read_coco(request.coco_json_path)
+                        target = next(
+                            (a for a in data.get("annotations", []) if a["id"] == request.annotation_id),
+                            None,
+                        )
+                        if target:
+                            target["segmentation"] = result["segmentation"]
+                            await _write_coco(request.coco_json_path, data)
+                            ann = target
                 return {"status": "reannotated", "annotation": ann}
             raise HTTPException(resp.status_code, "SAM3 reannotation failed")
     except httpx.RequestError as e:
         raise HTTPException(503, f"Segmentation service unavailable: {e}")
+
+
+@router.post("/segment-bbox")
+async def segment_bbox(request: SegmentBboxRequest):
+    """Get SAM3 segmentation mask for a user-drawn bounding box.
+
+    Returns the COCO polygon without touching any file — the caller decides
+    whether to attach the segmentation to an annotation.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                f"{SEGMENTATION_SERVICE_URL}/sam3/segment-image",
+                json={
+                    "image_path": request.image_path,
+                    "bbox": request.bbox,
+                    "text_prompt": request.text_hint,
+                    "return_polygon": True,
+                    "return_mask": False,
+                    "simplify_polygon": True,
+                    "simplify_tolerance": 2.0,
+                },
+            )
+            if resp.status_code == 200:
+                result = resp.json()
+                return {
+                    "success": result.get("success", False),
+                    "segmentation_coco": result.get("segmentation_coco") if result.get("success") else None,
+                }
+            return {"success": False, "segmentation_coco": None}
+    except httpx.RequestError as e:
+        logger.warning(f"SAM3 segment-bbox unavailable: {e}")
+        return {"success": False, "segmentation_coco": None}
+
+
+@router.post("/segment-point")
+async def segment_point(request: SegmentPointRequest):
+    """Get SAM3 segmentation mask for user-clicked points (Sam3TrackerModel).
+
+    Returns the COCO polygon without touching any file — the caller decides
+    whether to create an annotation from the result.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(
+                f"{SEGMENTATION_SERVICE_URL}/sam3/segment-point",
+                json={
+                    "image_path": request.image_path,
+                    "points": request.points,
+                    "labels": request.labels,
+                    "text_hint": request.text_hint,
+                    "return_polygon": request.return_polygon,
+                    "simplify_polygon": request.simplify_polygon,
+                    "simplify_tolerance": request.simplify_tolerance,
+                },
+            )
+            if resp.status_code == 200:
+                return resp.json()
+            return {"success": False, "segmentation_coco": None, "bbox": None, "confidence": 0.0}
+    except httpx.RequestError as e:
+        logger.warning(f"SAM3 segment-point unavailable: {e}")
+        return {"success": False, "segmentation_coco": None, "bbox": None, "confidence": 0.0}
+
+
+class SegmentTextRequest(BaseModel):
+    image_path: str
+    text_prompt: str
+
+
+@router.post("/segment-text")
+async def segment_text(request: SegmentTextRequest):
+    """Get SAM3 segmentation mask for a free-text prompt (PCS mode).
+
+    Returns the best-matching COCO polygon for the given text in the image.
+    """
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(
+                f"{SEGMENTATION_SERVICE_URL}/sam3/segment-image",
+                json={
+                    "image_path": request.image_path,
+                    "text_prompt": request.text_prompt,
+                    "return_polygon": True,
+                    "return_mask": False,
+                    "simplify_polygon": True,
+                    "simplify_tolerance": 2.0,
+                },
+            )
+            if resp.status_code == 200:
+                result = resp.json()
+                return {
+                    "success": result.get("success", False),
+                    "segmentation_coco": result.get("segmentation_coco") if result.get("success") else None,
+                    "bbox": result.get("bbox"),
+                    "confidence": result.get("confidence", 0.0),
+                    "error": result.get("error"),
+                }
+            return {"success": False, "segmentation_coco": None, "bbox": None, "confidence": 0.0}
+    except httpx.RequestError as e:
+        logger.warning(f"SAM3 segment-text unavailable: {e}")
+        return {"success": False, "segmentation_coco": None, "bbox": None, "confidence": 0.0}
+
+
+@router.post("/export")
+async def export_annotations(request: ExportRequest):
+    """Export COCO JSON to one or more formats (coco, yolo, voc)."""
+    valid_formats = {"coco", "yolo", "voc"}
+    requested = [f.lower() for f in request.formats]
+    unknown = set(requested) - valid_formats
+    if unknown:
+        raise HTTPException(400, f"Unknown formats: {unknown}. Supported: {valid_formats}")
+
+    data = await _read_coco(request.coco_json_path)
+    output_dir = Path(request.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    output_files: Dict[str, str] = {}
+
+    if "coco" in requested:
+        output_files["coco"] = request.coco_json_path
+
+    if "yolo" in requested:
+        output_files["yolo"] = await asyncio.to_thread(_export_yolo_sync, data, output_dir)
+
+    if "voc" in requested:
+        output_files["voc"] = await asyncio.to_thread(_export_voc_sync, data, output_dir)
+
+    return {"success": True, "output_files": output_files}
