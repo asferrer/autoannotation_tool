@@ -1,10 +1,8 @@
-version: "3.8"
-
 services:
   frontend:
     build: ./frontend
     ports:
-      - "3000:80"
+      - "3001:80"
     depends_on:
       gateway:
         condition: service_healthy
@@ -12,7 +10,9 @@ services:
       - annotation-net
 
   gateway:
-    build: ./services/gateway
+    build:
+      context: ./services
+      dockerfile: gateway/Dockerfile
     ports:
       - "8000:8000"
     environment:
@@ -33,14 +33,24 @@ services:
 
   segmentation:
     build:
-      context: ./services/segmentation
+      context: ./services
+      dockerfile: segmentation/Dockerfile
     ports:
       - "8002:8002"
     environment:
       - HF_TOKEN=${HF_TOKEN:-}
+      - SAM3_MODEL_ID=${SAM3_MODEL_ID:-facebook/sam3}
+      - SAM3_FP32=${SAM3_FP32:-false}
+      - SAM3_LAZY_LOAD=${SAM3_LAZY_LOAD:-true}
+      - LABELING_COOLDOWN_MS=${LABELING_COOLDOWN_MS:-200}
+      # Cooldown between class inferences within a single image (prevents GPU overheating).
+      # Increase if GPU fans saturate or PC shuts down. Set to 0 to disable.
+      - INTER_CLASS_COOLDOWN_MS=${INTER_CLASS_COOLDOWN_MS:-300}
+    # GPU thermal management: sudo nvidia-smi -pl 150 (adjust watts for your GPU)
     volumes:
       - checkpoints:/app/checkpoints
       - datasets:/app/datasets
+      - hf_cache:/root/.cache/huggingface
     deploy:
       resources:
         reservations:
@@ -65,3 +75,4 @@ volumes:
   datasets:
   jobs_db:
   checkpoints:
+  hf_cache:
