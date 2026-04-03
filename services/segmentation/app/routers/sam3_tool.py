@@ -34,6 +34,19 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _resolve_image_path(image_path: str) -> Path:
+    """Resolve image path, searching subdirectories if the direct path doesn't exist."""
+    p = Path(image_path)
+    if p.exists():
+        return p
+    # Search recursively in the parent directory for a file with the same name
+    parent = p.parent
+    name = p.name
+    for candidate in parent.rglob(name):
+        return candidate
+    raise FileNotFoundError(f"Image not found: {image_path}")
+
+
 @router.post("/sam3/segment-image", response_model=SAM3SegmentImageResponse, tags=["SAM3 Tool"])
 async def sam3_segment_image(request: SAM3SegmentImageRequest):
     """
@@ -67,9 +80,7 @@ async def sam3_segment_image(request: SAM3SegmentImageRequest):
             nparr = np.frombuffer(img_data, np.uint8)
             image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         elif request.image_path:
-            image_path = Path(request.image_path)
-            if not image_path.exists():
-                raise FileNotFoundError(f"Image not found: {request.image_path}")
+            image_path = _resolve_image_path(request.image_path)
             image = cv2.imread(str(image_path))
 
         if image is None:
@@ -640,10 +651,7 @@ async def sam3_segment_point(request: SegmentPointRequest):
         import torch
         from PIL import Image as PILImage
 
-        image_path = Path(request.image_path)
-        if not image_path.exists():
-            raise FileNotFoundError(f"Image not found: {request.image_path}")
-
+        image_path = _resolve_image_path(request.image_path)
         image = cv2.imread(str(image_path))
         if image is None:
             raise ValueError("Failed to load image")
