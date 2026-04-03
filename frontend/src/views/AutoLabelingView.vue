@@ -762,6 +762,16 @@ onUnmounted(() => {
         </ul>
       </AlertBox>
 
+      <!-- Error detail -->
+      <AlertBox
+        v-if="currentJob.status === 'failed' && currentJob.error"
+        type="error"
+        title="Job failed"
+        class="mt-4"
+      >
+        <pre class="text-xs whitespace-pre-wrap break-words font-mono mt-1">{{ currentJob.error }}</pre>
+      </AlertBox>
+
       <!-- Open in Annotate (when completed) -->
       <div v-if="currentJob.status === 'completed'" class="mt-4 flex justify-end">
         <BaseButton @click="openInAnnotate" variant="primary">

@@ -64,7 +64,7 @@ function openJobInAnnotate(job: any) {
     color: taskStore.LABEL_COLORS[i % taskStore.LABEL_COLORS.length],
   }))
   const imageDir = job.image_directories?.[0] ?? ''
-  const cocoPath = job.output_dir ? `${job.output_dir}/annotations_coco.json` : ''
+  const cocoPath = job.output_dir ? `${job.output_dir}/annotations.json` : ''
   taskStore.createTask(`Auto-labeled (${formatDate(job.created_at)})`, imageDir, cocoPath, labels)
   router.push('/annotate')
 }
@@ -222,7 +222,7 @@ function statusIcon(status: string) {
       </div>
 
       <button
-        @click="router.push('/auto-labeling')"
+        @click="router.push('/jobs')"
         class="text-xs text-gray-500 hover:text-primary transition-colors"
       >
         View all jobs →

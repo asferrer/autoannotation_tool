@@ -5,7 +5,7 @@ import { useI18n } from 'vue-i18n'
 import { useUiStore } from '@/stores/ui'
 import {
   LayoutDashboard, PenSquare, Plus, Settings,
-  ChevronLeft, ChevronRight,
+  ChevronLeft, ChevronRight, ListChecks,
 } from 'lucide-vue-next'
 
 const route = useRoute()
@@ -15,6 +15,7 @@ const { t } = useI18n()
 const navItems = [
   { label: 'Dashboard', path: '/', icon: LayoutDashboard },
   { label: 'New Task', path: '/create-task', icon: Plus },
+  { label: 'Jobs', path: '/jobs', icon: ListChecks },
   { label: 'Settings', path: '/settings', icon: Settings },
 ]
 

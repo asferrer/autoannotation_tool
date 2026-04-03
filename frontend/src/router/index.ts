@@ -20,6 +20,36 @@ const routes = [
     meta: { title: 'Annotate', fullscreen: true, hasUnsavedChanges: true },
   },
   {
+    path: '/auto-labeling',
+    name: 'auto-labeling',
+    component: () => import('@/views/AutoLabelingView.vue'),
+    meta: { title: 'Auto Labeling' },
+  },
+  {
+    path: '/annotation-review',
+    name: 'annotation-review',
+    component: () => import('@/views/AnnotationReviewView.vue'),
+    meta: { title: 'Annotation Review' },
+  },
+  {
+    path: '/label-manager',
+    name: 'label-manager',
+    component: () => import('@/views/LabelManagerView.vue'),
+    meta: { title: 'Label Manager' },
+  },
+  {
+    path: '/sam3-tools',
+    name: 'sam3-tools',
+    component: () => import('@/views/Sam3ToolsView.vue'),
+    meta: { title: 'SAM3 Tools' },
+  },
+  {
+    path: '/jobs',
+    name: 'jobs',
+    component: () => import('@/views/JobsView.vue'),
+    meta: { title: 'Jobs' },
+  },
+  {
     path: '/settings',
     name: 'settings',
     component: () => import('@/views/SettingsView.vue'),
